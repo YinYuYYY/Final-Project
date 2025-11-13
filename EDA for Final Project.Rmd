@@ -1,0 +1,263 @@
+---
+title: "EDA for Final Project"
+author: "Yinyu Yao"
+date: "2025-11-13"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(janitor) 
+library(broom)
+dir.create("data/processed", recursive = TRUE, showWarnings = FALSE)
+dir.create("figures", recursive = TRUE, showWarnings = FALSE)
+dir.create("tables", recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r cars}
+library(tidytuesdayR)
+tuesdata = tidytuesdayR::tt_load(2025, week = 13)
+pokemon_df = tuesdata$pokemon_df
+pokemon_df = subset(pokemon_df, select= -c(id, species_id, color_1, color_2, color_f, egg_group_1, egg_group_2, url_icon, url_image))
+```
+
+
+```{r}
+# Count rows with at least one missing value
+pokemon_df_without_type2_and_generation_id =  subset(pokemon_df, select= -c(type_2, generation_id))
+row_with_na = !complete.cases(pokemon_df_without_type2_and_generation_id)
+n_sparse <- sum(row_with_na)
+pct_sparse <- n_sparse / nrow(pokemon_df_without_type2_and_generation_id)
+
+cat("Number of rows with at least one N.A.(not count type2 or generation_id):", n_sparse, "\n")
+
+empty_type2 <- sum(is.na(pokemon_df$type_2))
+empty_generation_id <- sum(is.na(pokemon_df$generation_id))
+
+unique_generation_id <- sort(unique(pokemon_df$generation_id))
+n_unique_gen <- length(unique_generation_id)
+
+n_gen1 <- sum(pokemon_df$generation_id == 1, na.rm = TRUE)
+
+cat("Number of rows with missing type_2:", empty_type2, "\n")
+cat("Number of rows with missing generation_id:", empty_generation_id, "\n")
+cat("Unique generation IDs:", paste(unique_generation_id, collapse = ", "), "\n")
+
+gen_tab <- as.data.frame(table(pokemon_df$generation_id, useNA = "ifany"))
+names(gen_tab) <- c("generation_id", "count")
+knitr::kable(gen_tab, caption = "Counts of Pokémon by generation_id")
+
+type_tab <- as.data.frame(table(pokemon_df$type_1, useNA = "ifany"))
+names(type_tab) <- c("type_1", "count")
+knitr::kable(type_tab, caption = "Counts of Pokémon by type_1")
+```
+
+```{r}
+# conditional distribution of type2 given type1 (only for rows with type2)
+pokemon_types <- pokemon_df |>
+  filter(!is.na(type_2))
+
+type_pair_counts <- pokemon_types |>
+  count(type_1, type_2, name = "n") |>
+  group_by(type_1) |>
+  mutate(
+    row_total = sum(n),
+    prop = n / row_total
+  ) |>
+  arrange(type_1, desc(prop)) |>
+  ungroup()
+```
+
+```{r}
+readr::write_csv(type_pair_counts,
+                 "tables/type1_type2_joint_counts_proportions.csv")
+
+# Print first few rows (most informative combos)
+knitr::kable(
+  head(type_pair_counts, 30),
+  digits = 3,
+  caption = "Joint counts and row-wise proportions P(type_2 | type_1) (top 30 rows)."
+)
+```
+ 
+```{r}
+# For each type_1,  the most common type_2 (ties allowed)
+type2_pref <- type_pair_counts |>
+  group_by(type_1) |>
+  slice_max(prop, n = 1, with_ties = TRUE) |>
+  arrange(type_1, desc(prop)) |>
+  ungroup()
+
+readr::write_csv(type2_pref,
+                 "tables/type2_preference_by_type1.csv")
+
+knitr::kable(
+  type2_pref,
+  digits = 3,
+  caption = "Most frequent secondary type(s) for each primary type (type_1)."
+)
+```
+
+```{r}
+# Chi-squared test: are type_1 and type_2 independent?
+tab_t1_t2 <- table(
+  type_1 = pokemon_types$type_1,
+  type_2 = pokemon_types$type_2
+)
+
+chi_res <- chisq.test(tab_t1_t2)
+
+chi_res  # printed summary
+
+# Tidy-ish version for saving
+chi_tbl <- tibble(
+  statistic = chi_res$statistic,
+  df        = chi_res$parameter,
+  p_value   = chi_res$p.value
+)
+
+readr::write_csv(chi_tbl,
+                 "tables/chisq_type1_type2_independence.csv")
+
+knitr::kable(
+  chi_tbl,
+  caption = "Chi-squared test of independence between type_1 and type_2."
+)
+
+```
+
+```{r}
+# Distribution of Pokemon abilities by generation_id
+generation_id_f = fct_explicit_na(as.factor(pokemon_df$generation_id), na_level = "Unknown")
+pokemon_df <- pokemon_df |>
+  janitor::clean_names() |>
+  mutate(
+    base_stat_total = hp + attack + defense +
+      special_attack + special_defense + speed,generation_id_f)
+
+stat_vars <- c("hp", "attack", "defense",
+               "special_attack", "special_defense", "speed")
+
+
+# ---- Summary table by generation (including Unknown) ----
+gen_stats_all <- pokemon_df |>
+  group_by(generation_id_f) |>
+  summarise(
+    n = n(),
+    across(
+      all_of(stat_vars),
+      list(mean = ~mean(., na.rm = TRUE),
+           sd   = ~sd(.,   na.rm = TRUE)),
+      .names = "{.col}_{.fn}"
+    )
+  ) |>
+  arrange(generation_id_f)
+
+readr::write_csv(gen_stats_all,
+                 "tables/gen_stats_by_generation_all_stats.csv")
+
+knitr::kable(
+  gen_stats_all,
+  digits = 1,
+  caption = "Means and standard deviations of stats by generation (including Unknown)."
+)
+```
+ 
+```{r}
+#| label: figs-box-by-generation
+#| message: false
+#| warning: false
+#| fig.height: 4.5
+#| fig.width: 7
+
+# Generate and save boxplots for each stat by generation
+for (s in stat_vars) {
+  p <- ggplot(pokemon_df,
+              aes(x = generation_id_f, y = .data[[s]])) +
+    geom_boxplot(outlier.alpha = 0.4) +
+    labs(
+      title = paste0("Distribution of ", s, " by generation (including Unknown)"),
+      x = "Generation",
+      y = s
+    ) +
+    theme_bw()
+  
+  file_name <- paste0("figures/box_", s, "_by_generation.png")
+  ggsave(file_name, p, width = 7, height = 4.5, dpi = 150)
+  
+  cat("Saved:", file_name, "\n")
+  print(p)  # show in the knitted report
+}
+
+```
+ 
+```{r}
+# Distributions of abilities by type1
+#| label: stats-by-type1
+#| message: false
+#| warning: false
+
+# Ensure type_1 is a factor; order by frequency for nicer plots
+pokemon_df <- pokemon_df |>
+  mutate(
+    type_1_f = fct_infreq(as.factor(type_1))
+  )
+
+# Summary table by primary type
+type1_stats <- pokemon_df |>
+  group_by(type_1_f) |>
+  summarise(
+    n = n(),
+    across(
+      all_of(stat_vars),
+      list(mean = ~mean(., na.rm = TRUE),
+           sd   = ~sd(.,   na.rm = TRUE)),
+      .names = "{.col}_{.fn}"
+    )
+  ) |>
+  arrange(desc(n))
+
+readr::write_csv(type1_stats,
+                 "tables/type1_stats_all_stats.csv")
+
+knitr::kable(
+  type1_stats,
+  digits = 1,
+  caption = "Means and standard deviations of stats by primary type (type_1)."
+)
+
+```
+ 
+```{r}
+#| label: figs-box-by-type1
+#| message: false
+#| warning: false
+#| fig.height: 6
+#| fig.width: 7.5
+
+# Boxplots for each stat by primary type (flipped for readability)
+for (s in stat_vars) {
+  p <- ggplot(pokemon_df,
+              aes(x = type_1_f, y = .data[[s]])) +
+    geom_boxplot(outlier.alpha = 0.4) +
+    coord_flip() +
+    labs(
+      title = paste0("Distribution of ", s, " by primary type (type_1)"),
+      x = "Primary type (type_1)",
+      y = s
+    ) +
+    theme_bw()
+  
+  file_name <- paste0("figures/box_", s, "_by_type1.png")
+  ggsave(file_name, p, width = 7.5, height = 6, dpi = 150)
+  
+  cat("Saved:", file_name, "\n")
+  print(p)  # show in the knitted report
+}
+
+```
+ 
+ 
