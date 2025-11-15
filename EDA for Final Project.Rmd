@@ -1,7 +1,7 @@
 ---
-title: "EDA for Final Project"
-author: "Yinyu Yao"
-date: "2025-11-13"
+title: "STOR 664 — Part 1 Combined EDA (Pokémon)"
+author: "Team: Yinyu Yao, Kareena Legare, Samuel Moore, Irene Zhang, "
+date: "2025-11-15"
 output:
   pdf_document: default
   html_document: default
@@ -12,9 +12,6 @@ knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(janitor) 
 library(broom)
-dir.create("data/processed", recursive = TRUE, showWarnings = FALSE)
-dir.create("figures", recursive = TRUE, showWarnings = FALSE)
-dir.create("tables", recursive = TRUE, showWarnings = FALSE)
 ```
 
 ```{r cars}
